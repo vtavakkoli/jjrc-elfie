@@ -30,7 +30,8 @@ On Windows, use `py -3 -m venv .venv` and `.venv\\Scripts\\activate` before inst
 | A / D | Roll left / right |
 | Up / Down | Altitude-hold vertical input |
 | Left / Right | Yaw left / right |
-| T | Arm / spin-up command (not autonomous takeoff) |
+| T | Arm / spin-up after 10-second controller startup (not autonomous takeoff) |
+| L | Request landing (not confirmed by telemetry) |
 | X | Emergency motor shut-off (may cause immediate fall) |
 | Space (hold) | Send neutral movement axes |
 | + / - | Adjust maximum movement command strength (10–80%) |
@@ -40,7 +41,10 @@ Keep the application window focused to control the drone. When it loses focus, t
 
 ## Video / network details
 
-- Drone control: UDP `172.16.10.1:8895`, 20 commands/second.
+- Drone control: UDP `172.16.10.1:8895`, 20 commands/second. On Windows this uses an explicitly **bound, unconnected UDP socket** with `sendto()` and a 1-second retry after socket errors.
+- The program first sends 5 seconds of neutral idle packets, then 5 seconds of altitude-hold packets, matching the original reverse-engineered initialization sequence. Only then can `T` send the arm request.
+- The UI displays highlighted keys, last transmitted packet, packet count, local interface and errors. **UDP TX does not mean the drone acknowledged a command.**
+- The controller attempts to bind to the same local IPv4 address that the working TCP video stream uses. If that is not correct, run `python main.py --local-ip 172.16.10.X` using your PC’s actual Wi-Fi IPv4 address.
 - Camera: TCP `172.16.10.1:8888`, original 106-byte handshake protocol and raw H.264 stream.
 - Decoding: **PyAV** (FFmpeg bindings) in a background thread.
 - Display and keys: **Pygame 2**, one resizable desktop window.
@@ -48,9 +52,13 @@ Keep the application window focused to control the drone. When it loses focus, t
 
 This video protocol is documented for the **original JJRC H37 Elfie family**. Rebranded or later hardware revisions may use a different protocol. The video reader retries on disconnection, but compatibility needs verification on your exact drone.
 
+## Windows troubleshooting: control error 10022
+
+Windows error 10022 means an invalid socket argument or state. The earlier implementation used `connect()` + `send()` for UDP; this update instead explicitly binds a local UDP socket and uses `sendto()`, recreating it after errors. If control errors remain, run `ipconfig` in PowerShell and find the IPv4 address of your drone-connected Wi-Fi adapter (typically `172.16.10.x`). Run `python main.py --local-ip YOUR_WIFI_IPV4`. Avoid your Ethernet, VPN, loopback, or other interfaces. Confirm the drone IP/port in the UI. Video working establishes a TCP connection, not successful UDP control. If the indicator shows TX packets but the motors never respond with propellers removed, check drone variant and verify packets with Wireshark; there is no UDP acknowledgement.
+
 ## Flight safety
 
-**This code has not been flight-tested on actual drone hardware.** First test with propellers removed, verify directions and the emergency-stop button, and only then consider flight in a safe open area. The emergency stop immediately cuts motor power. Closing the app sends neutral commands, **not a verified safe landing sequence**. UDP does not acknowledge delivery, so an indicated command may not have been received by the drone. There is no battery telemetry, obstacle avoidance, autonomous landing, or guaranteed link-loss failsafe.
+**This code has not been flight-tested on actual drone hardware.** First test with propellers removed, verify directions and the emergency-stop button, and only then consider flight in a safe open area. The emergency stop immediately cuts motor power. Use `L` to request a landing before quitting; landing is unconfirmed. Closing the app sends neutral commands, **not a verified safe landing sequence**. UDP does not acknowledge delivery, so an indicated command may not have been received by the drone. There is no battery telemetry, obstacle avoidance, autonomous landing, or guaranteed link-loss failsafe.
 
 ## Legacy files
 
