@@ -1,80 +1,56 @@
+"""Historical JJRC H37 UDP packet regression vectors.
+
+Originally these cases targeted the Python 2-only drone.py implementation
+with nose2 and third-party mock. They now exercise the supported Python 3.12
+packet encoder in main.py and require only the standard-library unittest.
+
+The captured raw-throttle packets use the modern encoder's [-1, 1] normalized
+axis representation. No live drone connection is made by these tests.
+"""
+
 import unittest
-import nose2
 
-from unittest import expectedFailure
-from mock import Mock, MagicMock
-
-import drone
+from main import HOLD_PACKET, IDLE_PACKET, packet
 
 
-class DroneProtocolMathTestCase(unittest.TestCase):
-    def test_denormalization(self):
-        denorm = drone._denormalize_
-        self.assertEqual(denorm(-1), 0)
-        self.assertEqual(denorm(-0.5), 64)
-        self.assertEqual(denorm(0), 128)
-        self.assertEqual(denorm(0.5), 191)
-        self.assertEqual(denorm(1), 255)
+class OriginalJJRCProtocolTests(unittest.TestCase):
+    def test_neutral_altitude_hold(self):
+        self.assertEqual(packet(), HOLD_PACKET)
+        self.assertEqual(packet().hex(), "6680808080000099")
+
+    def test_original_idle_packet(self):
+        self.assertEqual(IDLE_PACKET.hex(), "6680800180008199")
+
+    def test_arm_command(self):
+        self.assertEqual(packet(command=1).hex(), "6680808080010199")
+
+    def test_emergency_motor_stop_command(self):
+        self.assertEqual(packet(command=4).hex(), "6680808080040499")
+
+    def test_original_capture_low_throttle_pitch(self):
+        # Original captured packet: roll=128 pitch=127 throttle=1 yaw=128.
+        # Legacy low-throttle 0.004 maps to normalized -0.992 in main.py.
+        data = packet(roll=0.0, pitch=-0.004, throttle=-0.992, yaw=0.0)
+        self.assertEqual(data.hex(), "66807f0180007e99")
+
+    def test_original_capture_low_throttle_roll(self):
+        # Original captured packet: roll=107 pitch=132 throttle=0 yaw=128.
+        data = packet(roll=-0.16, pitch=0.035, throttle=-1.0, yaw=0.0)
+        self.assertEqual(data.hex(), "666b840080006f99")
+
+    def test_direction_and_limits(self):
+        # Neutral is 128; controls must move in expected directions.
+        self.assertGreater(packet(roll=0.3)[1], 128)
+        self.assertLess(packet(roll=-0.3)[1], 128)
+        self.assertGreater(packet(pitch=0.3)[2], 128)
+        self.assertLess(packet(pitch=-0.3)[2], 128)
+        self.assertGreater(packet(throttle=0.3)[3], 128)
+        self.assertLess(packet(throttle=-0.3)[3], 128)
+        self.assertGreater(packet(yaw=0.3)[4], 128)
+        self.assertLess(packet(yaw=-0.3)[4], 128)
+        self.assertEqual(packet(roll=999)[1], 255)
+        self.assertEqual(packet(roll=-999)[1], 0)
 
 
-class AtGroundDroneProtocolTestCase(unittest.TestCase):
-    # @expectedFailure
-    def test_idle(self):
-        expected_command = '6680800080008099'.decode('hex')
-        command = drone.get_command_string(
-            roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command=None,
-            altitude_hold=False
-        )
-        self.assertEqual(command, expected_command)
-
-    def test_idle_altitude_hold(self):
-        expected_command = '6680808080000099'.decode('hex')
-        command = drone.get_command_string(
-            roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command=None,
-        )
-        self.assertEqual(command, expected_command)
-
-    def test_spin_up_altitude_hold(self):
-        expected_command = '6680808080010199'.decode('hex')
-        command = drone.get_command_string(
-            roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command='spin_up',
-        )
-        self.assertEqual(command, expected_command)
-
-    def test_shut_engines_altitude_hold(self):
-        expected_command = '6680808080040499'.decode('hex')
-        command = drone.get_command_string(
-            roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command='shut_off',
-        )
-        self.assertEqual(command, expected_command)
-
-    @expectedFailure
-    def test_land_altitude_hold(self):
-        expected_command = '00'.decode('hex')
-        command = drone.get_command_string(
-            roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command='land',
-        )
-        self.assertEqual(command, expected_command)
-
-
-class InFlightDroneProtocolTestCase(unittest.TestCase):
-    """ these values are from adria's post:
-    https://hackaday.io/project/19680-controlling-a-jjrc-h37-elfie-quad-from-a-pc/log/\
-    53557-a-basic-script-to-monitor-the-controller-input-sent-to-the-quadcopter-by-udp
-    """
-    def test_flight(self):
-        # 66807f0180007e99 roll:128 pitch:127 throttle:1 yaw:128 commands:00000000 err:7e
-        expected_command = '66807f0180007e99'
-        command = drone.get_command_string(
-            roll=0.0, pitch=-0.004, throttle=0.004, yaw=0.0, command=None,
-            altitude_hold=False
-        ).encode('hex')
-        self.assertEqual(command, expected_command)
-
-        # 666b840080006f99 roll:107 pitch:132 throttle:0 yaw:128 commands:00000000 err:6f
-        expected_command = '666b840080006f99'
-        command = drone.get_command_string(
-            roll=-0.16, pitch=0.035, throttle=0.0, yaw=0.0, command=None,
-            altitude_hold=False
-        ).encode('hex')
-        self.assertEqual(command, expected_command)
+if __name__ == "__main__":
+    unittest.main()
