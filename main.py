@@ -15,7 +15,9 @@ import av
 import pygame
 
 
-VIDEO_HELLO = bytes.fromhex(\n    "495464000000580000009bf89049c926884d4f922b3b33ba7eceacef63f77157ab2f53e3f768ecd9e18547b8c22e21d01bfb6b3de3"\n    "25a27b8fb3acef63f77157ab2f53e3f768ecd9e185eb20be383aab05a8c2a71f2c906d93f72a85e7356effe1b8f5af097f9147f87e"\n)
+VIDEO_HELLO = bytes.fromhex("495464000000580000009bf89049c926884d4f922b3b33ba7eceacef63f77157ab2f53e3f768ecd9e18547b8c22e21d01bfb6b3de3"    
+                            "25a27b8fb3acef63f77157ab2f53e3f768ecd9e185eb20be383aab05a8c2a71f2c906d93f72a85e7356effe1b8f5af097f9147f87e"
+                           )
 DARK = (13, 19, 29)
 PANEL = (22, 32, 47)
 WHITE = (230, 239, 247)
