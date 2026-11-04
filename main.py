@@ -68,6 +68,8 @@ class FlightLink:
         target_ip = local_ip or self.local_ip
         if self.sock is not None and target_ip == self.local_ip:
             return True
+        if self.sock is None and time.monotonic() < self.next_retry:
+            return False
         if self.sock is not None:
             self.sock.close()
             self.sock = None
@@ -240,7 +242,7 @@ def main():
     armed_requested = False
     focused = True
     mode = "STARTING"
-    notice = "Remove propellers for the first control test. UDP TX does not confirm drone reception."
+    notice = "Startup takes 10s. Remove propellers for first test. UDP TX cannot confirm reception."
     flight.open()
     video.start()
 
@@ -266,7 +268,7 @@ def main():
                         active_command, command_until = 2, now + 1.05
                         armed_requested = False
                         mode = "LAND REQUESTED"
-                    elif event.key == pygame.K_t and now - start_time >= 2.0 and now >= command_until:
+                    elif event.key == pygame.K_t and now - start_time >= 10.0 and now >= command_until:
                         active_command, command_until = 1, now + 1.05
                         armed_requested = True
                         mode = "ARM REQUESTED"
@@ -292,12 +294,12 @@ def main():
                 roll = pitch = throttle = yaw = 0.0
 
             if now - last_send >= 0.05:
-                if now - start_time < 1.0:
+                if now - start_time < 5.0:
                     data = IDLE_PACKET
-                    mode = "INITIALIZING IDLE"
-                elif now - start_time < 2.0:
+                    mode = "INITIALIZING IDLE  /  {}s".format(max(0, int(5 - (now - start_time))))
+                elif now - start_time < 10.0:
                     data = HOLD_PACKET
-                    mode = "INITIALIZING ALT-HOLD"
+                    mode = "INITIALIZING ALT-HOLD  /  {}s".format(max(0, int(10 - (now - start_time))))
                 elif now < command_until:
                     data = packet(command=active_command)
                 else:
