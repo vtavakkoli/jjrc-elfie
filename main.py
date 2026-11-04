@@ -25,6 +25,10 @@ MUTED = (146, 165, 183)
 GREEN = (72, 220, 155)
 RED = (250, 105, 105)
 BLUE = (80, 178, 248)
+AMBER = (255, 195, 90)
+IDLE_PACKET = bytes.fromhex("6680800180008199")
+HOLD_PACKET = bytes.fromhex("6680808080000099")
+
 
 
 def packet(roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command=0):
@@ -40,33 +44,83 @@ def packet(roll=0.0, pitch=0.0, throttle=0.0, yaw=0.0, command=0):
 
 
 class FlightLink:
-    def __init__(self, host, port, demo=False):
-        self.demo = demo
+    """Unconnected UDP transport, explicitly bound for Windows/Wi-Fi stability.
+
+    sendto() avoids a stale 'connected' UDP socket after Windows changes routes.
+    A successful send only confirms local transmission, not drone reception.
+    """
+
+    def __init__(self, host, port, demo=False, local_ip=None):
         self.address = (host, port)
+        self.demo = demo
+        self.preferred_ip = local_ip
+        self.local_ip = local_ip or "0.0.0.0"
         self.sock = None
         self.last_error = ""
+        self.sent_count = 0
+        self.error_count = 0
+        self.last_sent_hex = "-"
+        self.next_retry = 0.0
 
-    def open(self):
-        if not self.demo:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sock.connect(self.address)
+    def open(self, local_ip=None):
+        if self.demo:
+            return True
+        target_ip = local_ip or self.local_ip
+        if self.sock is not None and target_ip == self.local_ip:
+            return True
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                sock.bind((target_ip, 0))  # Bind explicitly; port remains ephemeral.
+            except OSError:
+                sock.close()
+                raise
+            self.sock = sock
+            self.local_ip = target_ip
+            self.last_error = ""
+            return True
+        except OSError as exc:
+            self.last_error = f"UDP bind {target_ip}: {exc}"
+            self.next_retry = time.monotonic() + 1.0
+            return False
 
     def send(self, data):
         if self.demo:
-            return
+            self.last_sent_hex = data.hex()
+            self.sent_count += 1
+            return True
+        if self.sock is None and time.monotonic() >= self.next_retry:
+            self.open()
+        if self.sock is None:
+            return False
         try:
-            self.sock.send(data)
-            self.last_error = ""
+            num_sent = self.sock.sendto(data, self.address)
+            if num_sent != len(data):
+                raise OSError(f"short UDP write: {num_sent}/{len(data)}")
         except OSError as exc:
-            self.last_error = str(exc)
+            self.last_error = f"UDP send: {exc}"
+            self.error_count += 1
+            self.sock.close()
+            self.sock = None
+            self.next_retry = time.monotonic() + 1.0
+            return False
+        self.last_error = ""
+        self.last_sent_hex = data.hex()
+        self.sent_count += 1
+        return True
 
     def close(self):
+        # Neutral command only: not an automatic land or a safety guarantee.
         if self.sock is not None:
             try:
-                self.send(packet())
-            finally:
-                self.sock.close()
-                self.sock = None
+                self.sock.sendto(HOLD_PACKET, self.address)
+            except OSError:
+                pass
+            self.sock.close()
+            self.sock = None
 
 
 class VideoLink:
@@ -78,6 +132,7 @@ class VideoLink:
         self.frame = None
         self.frame_time = 0.0
         self.status = "DEMO" if demo else "CONNECTING"
+        self.local_ip = None
         self.thread = None
         self.connection = None
 
@@ -88,13 +143,15 @@ class VideoLink:
 
     def snapshot(self):
         with self.lock:
-            return self.frame, self.frame_time, self.status
+            return self.frame, self.frame_time, self.status, self.local_ip
 
     def _run(self):
         while not self.stop_event.is_set():
             try:
                 with socket.create_connection((self.host, self.port), timeout=3) as conn:
                     self.connection = conn
+                    with self.lock:
+                        self.local_ip = conn.getsockname()[0]
                     conn.settimeout(1.0)
                     conn.sendall(VIDEO_HELLO)
                     # Original Elfie stream begins with a 106-byte response header.
@@ -146,32 +203,44 @@ def draw_text(surface, font, value, position, color=WHITE):
     surface.blit(font.render(value, True, color), position)
 
 
+def draw_pill(surface, font, text, x, y, active=False):
+    label = font.render(text, True, DARK if active else MUTED)
+    rect = pygame.Rect(x, y, label.get_width() + 20, 29)
+    pygame.draw.rect(surface, GREEN if active else PANEL, rect, border_radius=7)
+    surface.blit(label, (x + 10, y + 6))
+    return rect.right + 8
+
+
 def main():
-    parser = argparse.ArgumentParser(description="JJRC Elfie keyboard FPV controller")
+    parser = argparse.ArgumentParser(description="JJRC H37 Elfie keyboard FPV controller")
     parser.add_argument("--host", default="172.16.10.1")
     parser.add_argument("--control-port", type=int, default=8895)
     parser.add_argument("--video-port", type=int, default=8888)
-    parser.add_argument("--demo", action="store_true", help="UI preview without a drone")
+    parser.add_argument("--local-ip", help="Bind UDP to this Wi-Fi IPv4 address (default: auto from video connection)")
+    parser.add_argument("--demo", action="store_true", help="Preview interface without sending commands")
     args = parser.parse_args()
 
     pygame.init()
-    screen = pygame.display.set_mode((1100, 720), pygame.RESIZABLE)
+    screen = pygame.display.set_mode((1100, 760), pygame.RESIZABLE)
     pygame.display.set_caption("ELFIE FPV  |  Keyboard Flight Deck")
     title_font = pygame.font.SysFont("segoeui", 29, bold=True)
     font = pygame.font.SysFont("segoeui", 19)
     small = pygame.font.SysFont("consolas", 16)
+    tiny = pygame.font.SysFont("consolas", 14)
     clock = pygame.time.Clock()
 
-    flight = FlightLink(args.host, args.control_port, demo=args.demo)
+    flight = FlightLink(args.host, args.control_port, demo=args.demo, local_ip=args.local_ip)
     video = VideoLink(args.host, args.video_port, demo=args.demo)
-    speed = 0.35
+    speed = 0.30
     last_send = 0.0
+    start_time = time.monotonic()
     command_until = 0.0
     active_command = 0
     running = True
-    armed = False
+    armed_requested = False
     focused = True
-    warning = "Connect to the drone Wi-Fi before flight. Test without propellers first."
+    mode = "STARTING"
+    notice = "Remove propellers for the first control test. UDP TX does not confirm drone reception."
     flight.open()
     video.start()
 
@@ -188,19 +257,33 @@ def main():
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
-                    elif event.key == pygame.K_t:
-                        active_command, command_until = 1, now + 0.35
-                        armed = True
                     elif event.key == pygame.K_x:
-                        active_command, command_until = 4, now + 0.6
-                        armed = False
+                        # Cut motors (may cause uncontrolled drop). Works even if not armed.
+                        active_command, command_until = 4, now + 1.05
+                        armed_requested = False
+                        mode = "EMERGENCY STOP REQUESTED"
+                    elif event.key == pygame.K_l and now >= command_until:
+                        active_command, command_until = 2, now + 1.05
+                        armed_requested = False
+                        mode = "LAND REQUESTED"
+                    elif event.key == pygame.K_t and now - start_time >= 2.0 and now >= command_until:
+                        active_command, command_until = 1, now + 1.05
+                        armed_requested = True
+                        mode = "ARM REQUESTED"
                     elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):
                         speed = min(0.8, round(speed + 0.05, 2))
                     elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
                         speed = max(0.1, round(speed - 0.05, 2))
 
+            frame, frame_time, video_status, video_local_ip = video.snapshot()
+            # TCP video already found the correct route to the drone. Use its IPv4
+            # Wi-Fi interface for UDP too, rather than the Windows default route.
+            if not args.local_ip and video_local_ip and flight.local_ip != video_local_ip:
+                flight.open(video_local_ip)
+
             keys = pygame.key.get_pressed()
-            if focused and now >= command_until and not keys[pygame.K_SPACE]:
+            controls_enabled = focused and armed_requested and now >= command_until
+            if controls_enabled and not keys[pygame.K_SPACE]:
                 roll = speed * (int(keys[pygame.K_d]) - int(keys[pygame.K_a]))
                 pitch = speed * (int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
                 throttle = speed * (int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]))
@@ -208,47 +291,83 @@ def main():
             else:
                 roll = pitch = throttle = yaw = 0.0
 
-            command = active_command if now < command_until else 0
-            if now >= command_until:
-                active_command = 0
-            # 20 Hz keepalive, independent of camera reception and rendering.
             if now - last_send >= 0.05:
-                flight.send(packet(roll, pitch, throttle, yaw, command))
+                if now - start_time < 1.0:
+                    data = IDLE_PACKET
+                    mode = "INITIALIZING IDLE"
+                elif now - start_time < 2.0:
+                    data = HOLD_PACKET
+                    mode = "INITIALIZING ALT-HOLD"
+                elif now < command_until:
+                    data = packet(command=active_command)
+                else:
+                    active_command = 0
+                    data = packet(roll, pitch, throttle, yaw)
+                    if mode.startswith("INITIALIZING"):
+                        mode = "READY: PRESS T TO ARM"
+                flight.send(data)
                 last_send = now
 
             width, height = screen.get_size()
             screen.fill(DARK)
-            draw_text(screen, title_font, "ELFIE  /  FPV FLIGHT DECK", (25, 15))
-            draw_text(screen, small, "SIMULATION" if args.demo else args.host, (width - 225, 24), BLUE)
-            video_bottom = max(250, height - 195)
-            viewport = pygame.Rect(24, 68, max(200, width - 48), video_bottom - 68)
+            draw_text(screen, title_font, "ELFIE  /  FPV FLIGHT DECK", (24, 12))
+            draw_text(screen, small, "SIMULATION" if args.demo else args.host, (max(24, width - 205), 27), BLUE)
+            video_bottom = max(240, height - 228)
+            viewport = pygame.Rect(24, 66, max(200, width - 48), video_bottom - 66)
             pygame.draw.rect(screen, PANEL, viewport, border_radius=12)
 
-            frame, frame_time, video_status = video.snapshot()
-            if frame is not None and now - frame_time < 3:
+            if frame is not None and now - frame_time < 3.0:
                 pixels, fw, fh = frame
                 image = pygame.image.frombuffer(pixels, (fw, fh), "RGB")
-                ratio = min(viewport.width / fw, viewport.height / fh)
-                image = pygame.transform.scale(image, (int(fw * ratio), int(fh * ratio)))
-                target = image.get_rect(center=viewport.center)
-                screen.blit(image, target)
+                scale = min(viewport.width / fw, viewport.height / fh)
+                image = pygame.transform.scale(image, (int(fw * scale), int(fh * scale)))
+                screen.blit(image, image.get_rect(center=viewport.center))
             else:
-                draw_text(screen, title_font, "WAITING FOR LIVE VIDEO", (viewport.x + 35, viewport.centery - 20), MUTED)
+                draw_text(screen, title_font, "WAITING FOR LIVE VIDEO", (viewport.x + 32, viewport.centery - 25), MUTED)
                 if args.demo:
-                    draw_text(screen, font, "Demo mode: drone commands disabled", (viewport.x + 35, viewport.centery + 22), BLUE)
+                    draw_text(screen, font, "Demo mode: no commands sent to hardware",
+                              (viewport.x + 32, viewport.centery + 20), BLUE)
 
-            draw_text(screen, small, "VIDEO  " + video_status, (viewport.x + 16, viewport.y + 14),
+            draw_text(screen, small, "VIDEO  " + video_status[:44],
+                      (viewport.x + 16, viewport.y + 14),
                       GREEN if video_status == "STREAMING" else MUTED)
-            state = "ARM COMMAND SENT" if armed else "MOTORS NOT ARMED BY UI"
-            draw_text(screen, small, state, (viewport.x + 16, viewport.bottom - 30), GREEN if armed else MUTED)
-            y = viewport.bottom + 14
-            draw_text(screen, font, "W/S  FORWARD/BACK     A/D  STRAFE     UP/DOWN  ALTITUDE     LEFT/RIGHT  YAW", (28, y))
-            draw_text(screen, font, "T  ARM     X  EMERGENCY STOP     SPACE  NEUTRAL     +/-  SPEED     ESC  QUIT", (28, y + 33))
-            draw_text(screen, small, "SPEED {:3.0f}%   |   ROLL {:+.2f}   PITCH {:+.2f}   VERTICAL {:+.2f}   YAW {:+.2f}".format(
-                speed * 100, roll, pitch, throttle, yaw), (28, y + 71), BLUE)
-            status = ("FOCUS LOST: NEUTRAL COMMANDS" if not focused else
-                      "CONTROL ERROR: " + flight.last_error if flight.last_error else warning)
-            draw_text(screen, small, status[:110], (28, y + 102), RED if (not focused or flight.last_error) else MUTED)
+            draw_text(screen, small, mode, (viewport.x + 16, viewport.bottom - 28),
+                      RED if active_command == 4 else (AMBER if armed_requested else MUTED))
+
+            y = viewport.bottom + 13
+            draw_text(screen, tiny, "LIVE KEY INPUT", (28, y + 8), MUTED)
+            x = 167
+            for name, key in [("W", pygame.K_w), ("A", pygame.K_a), ("S", pygame.K_s),
+                              ("D", pygame.K_d), ("UP", pygame.K_UP), ("DN", pygame.K_DOWN),
+                              ("LT", pygame.K_LEFT), ("RT", pygame.K_RIGHT)]:
+                x = draw_pill(screen, tiny, name, x, y,
+                              focused and keys[key] and not keys[pygame.K_SPACE])
+            draw_text(screen, small,
+                      "W/S FORWARD/BACK    A/D LEFT/RIGHT    UP/DOWN ASCEND/DESCEND    LEFT/RIGHT TURN",
+                      (28, y + 43))
+            draw_text(screen, small,
+                      "T ARM    L LAND    X EMERGENCY STOP    SPACE NEUTRAL    +/- SPEED    ESC QUIT",
+                      (28, y + 75))
+            draw_text(screen, small,
+                      "GAIN {:2.0f}%   ROLL {:+.2f}   PITCH {:+.2f}   ALT {:+.2f}   YAW {:+.2f}".format(
+                          speed * 100, roll, pitch, throttle, yaw),
+                      (28, y + 108), BLUE)
+            if flight.last_error:
+                network = "CONTROL ERROR: " + flight.last_error
+                network_color = RED
+            elif flight.sent_count:
+                network = "UDP TX {} (UNCONFIRMED)   {} -> {}:{}   FAILURES {}".format(
+                    flight.sent_count, flight.local_ip, args.host, args.control_port, flight.error_count)
+                network_color = GREEN
+            else:
+                network = "UDP: WAITING FOR TRANSMISSION"
+                network_color = AMBER
+            draw_text(screen, tiny, network[:130], (28, y + 140), network_color)
+            hint = "FOCUS LOST - NEUTRAL INPUTS" if not focused else notice
+            draw_text(screen, tiny, hint[:135], (28, y + 167),
+                      AMBER if not focused else MUTED)
+            draw_text(screen, tiny, "LAST UDP: " + flight.last_sent_hex.upper(),
+                      (max(28, width - 270), y + 195), MUTED)
             pygame.display.flip()
             clock.tick(60)
     finally:
