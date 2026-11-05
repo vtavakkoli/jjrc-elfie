@@ -266,6 +266,14 @@ def parse_args():
                    help="Camera F correction limit, 0.05 - 0.35 (experimental)")
     p.add_argument("--hold-observe-only", action="store_true",
                    help="F tracks visual motion but NEVER sends automatic roll/pitch")
+    p.add_argument("--check-sensors", action="store_true",
+                   help="Ground-only Wi-Fi check for exposed IMU/barometer telemetry; no flight commands")
+    p.add_argument("--sensor-duration", type=float, default=20.0,
+                   help="Sensor diagnostic capture duration in seconds (default: 20)")
+    p.add_argument("--sensor-report", default="sensor_probe.json",
+                   help="JSON path for raw diagnostic observations")
+    p.add_argument("--sensor-passive-only", action="store_true",
+                   help="Sensor check does not even send the Android device-ID read requests")
     args = p.parse_args()
     if not 0.1 <= args.stick_gain <= 1.0:
         p.error("--stick-gain must be between 0.1 and 1.0")
@@ -276,6 +284,14 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.check_sensors:
+        # No Pygame UI, VideoLink, FlightLink, or flight-control packets are
+        # created in this diagnostic mode. Keep the aircraft on the ground.
+        from sensor_probe import run_probe
+        run_probe(host=args.host, duration=args.sensor_duration,
+                  local_ip=args.local_ip, report_path=args.sensor_report,
+                  passive_only=args.sensor_passive_only)
+        return
     pygame.init()
     screen = pygame.display.set_mode((1180, 790), pygame.RESIZABLE)
     pygame.display.set_caption("ELFIE  |  Original Android Flight Deck")
