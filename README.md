@@ -43,6 +43,29 @@ The program uses the original Android control packets (`FF 08 ...`, 11 bytes, ad
 
 Window losing focus also cancels F and sends neutral movement input. Manual W/S/A/D/arrow keys immediately cancel F and return control to the pilot.
 
+## Test whether IMU / barometer values are exposed over Wi-Fi
+
+**Run this on the ground with motors stopped.** Connect the PC to the drone Wi-Fi and **close the flight controller and original phone app** first so they do not consume the same UDP listener port.
+
+```powershell
+git pull origin master
+python main.py --check-sensors
+```
+
+The test listens for **20 seconds**, on the response socket and local UDP port **8081** (matching `UDPServiceByPort` in the supplied original Android app). It sends **only two read-only identity requests** to the drone's UDP port 8080: `0x0F` (get device type) and `0x28` (get firmware version). It **never sends the 11-byte flight-control packet, arms motors, or takes off.**
+
+For a fully passive network capture, with no outbound packets at all:
+
+```powershell
+python main.py --check-sensors --sensor-passive-only --sensor-duration 30
+```
+
+The default result file is **`sensor_probe.json`**. It contains response counts, device identifiers, abbreviated hex samples of received packet types, and separate statuses for gyroscope, accelerometer, six-axis IMU, barometric pressure and altitude of unknown origin. Raw packet samples are **not decoded speculatively**. An IMU is marked as observed only with clearly labelled numeric gyro *and* acceleration data. Pressure values require an explicit pressure unit (`Pa` or `hPa`); a height value alone does **not** prove that barometric measurements are accessible.
+
+An output of **`not_verified`** means *no recognizable sensor readings were received*, not that the drone lacks the sensor. The original Android `GravityUtils.java` reads the **phone's** motion sensor for tilt-based remote control; it does not reveal drone IMU data. Although some Android app components mention flight height and GPS, we have **not verified a firmware-specific binary decoder or IMU polling command** for this particular drone. Upload the generated `sensor_probe.json` for further packet analysis if no sensor fields appear.
+
+The probe can also run standalone using **`python sensor_probe.py`**, which only requires the Python standard library.
+
 ## F: experimental visual landmark stabilization
 
 **This is not true 3-D position hold. Do not rely on it to avoid collisions, prevent drifting, or maintain a fixed height.** A forward-facing single camera can confuse drone translation with camera pitch/yaw and changes in landmark depth. A true hover controller normally needs additional sensors and calibrated flight dynamics. The drone's built-in altitude-hold mode handles altitude to the extent its firmware can; the camera code **does not command vertical throttle or yaw**.
@@ -91,6 +114,8 @@ python -m unittest discover -s tests -v
 - [vision_hold.py](vision_hold.py) — optional bounded camera feature tracker with loss-of-tracking cutoff
 - [tests/test_android_protocol.py](tests/test_android_protocol.py) — protocol vectors and control-bit tests
 - [tests/test_vision_hold.py](tests/test_vision_hold.py) — synthetic-image vision and UDP regressions
+- [sensor_probe.py](sensor_probe.py) — non-flight sensor availability diagnostic and UDP response capture
+- [tests/test_sensor_probe.py](tests/test_sensor_probe.py) — safe query, parser, capture and report tests
 - [.github/workflows/python-checks.yml](.github/workflows/python-checks.yml) — Windows/Ubuntu Python 3.12 CI
 
 **Limitations:** This is experimental software, not a certified flight controller. A successful UDP send is not proof that the drone has received or executed it. The app has no battery, inertial, altimeter, obstacle or GPS telemetry, no confirmed radio-loss failsafe, and no guaranteed safe landing on application exit. Keep the aircraft in sight, use an unobstructed test area, and maintain direct manual intervention.
