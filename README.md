@@ -52,9 +52,11 @@ The exact format is implemented in [android_protocol.py](android_protocol.py). O
 | **H** | Toggle altitude hold when not armed |
 | **N** | Headless mode toggle |
 | **C** | Calibration pulse while disarmed; aircraft must be stationary |
-| **+ / -** | Change Android speed mode 0 / 1 / 2 |
+| **+ / -** | Cycle Android speed mode 0 / 1 / 2 (international keyboard layouts supported) |
 | **Space** | Neutral motion; in manual mode also sets throttle to zero |
 | **Esc** | Quit and send a zero-throttle packet (not a guaranteed landing) |
+
+**Directional fix (5 November 2026):** The first Android desktop implementation mistakenly used 30% analog gain for the right stick and yaw stick (values near 44–82 around neutral 63), which could make commands too weak for the drone to respond. The default is now **75% stick travel** (approximately 15–111) for W/S, A/D and yaw. The original Android speed selection is **separate**: packet byte 9 bits 0–1 contain speed mode 0, 1 or 2. Plus and minus now support German/Austrian keyboard mappings. If 75% directional input is too strong or too weak, choose `--stick-gain 0.5` or `--stick-gain 1.0`, respectively; verify with propellers removed before any flight. The Java source explicitly includes `FF 08` as the header, so **do not remove it**.
 
 **Important:** The original Android app defaults to manual throttle, which does not spring back to neutral; the desktop emulates that with a throttle latch. Up increases it gradually; releasing Up retains the throttle position. **Up can spin motors in manual mode even without pressing T.** The safest way to evaluate command encoding is with propellers removed. Pressing **T** enables altitude hold and sends the Android takeoff bit for one second, matching the original app's takeoff control bits (while saving the separate ALT button click).
 
@@ -78,6 +80,9 @@ python main.py --device-type UDP_720 --firmware-version V2.4.0
 
 # Revert to the old working H37 controller
 python main.py --protocol h37
+
+# 75% directional stick travel is the default. Full stick for isolated testing:
+python main.py --stick-gain 1.0 --no-video
 
 # Run tests without hardware
 python -m unittest discover -s tests -v
