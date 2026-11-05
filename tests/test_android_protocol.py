@@ -60,6 +60,35 @@ class OriginalAndroidPacketTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 android_packet(**{name: 33})
 
+    def test_keyboard_deflection_matches_android_rocker_ranges(self):
+        # Android original right/left rockers range 0..127 (neutral 63).
+        # A held keyboard direction now uses 75% of the full rocker range.
+        gain = 0.75
+        neutral = android_packet(altitude_hold=True)
+        left = android_packet(roll=-gain, altitude_hold=True)
+        right = android_packet(roll=gain, altitude_hold=True)
+        forward = android_packet(pitch=gain, altitude_hold=True)
+        backward = android_packet(pitch=-gain, altitude_hold=True)
+        yaw_left = android_packet(yaw=-gain, altitude_hold=True)
+        yaw_right = android_packet(yaw=gain, altitude_hold=True)
+        self.assertEqual(neutral[3:6], bytes([63, 64, 63]))
+        self.assertLessEqual(left[5], 32)
+        self.assertGreaterEqual(right[5], 96)
+        self.assertLessEqual(forward[4], 32)
+        self.assertGreaterEqual(backward[4], 96)
+        self.assertLessEqual(yaw_left[3], 32)
+        self.assertGreaterEqual(yaw_right[3], 96)
+        for data in (left, right, forward, backward, yaw_left, yaw_right):
+            self.assertEqual(len(data), 11)
+            self.assertEqual(sum(data[1:]) & 0xff, 0xff)
+
+    def test_speed_mode_only_changes_packet_flag(self):
+        packets = [android_packet(roll=0.75, speed_mode=n) for n in range(3)]
+        self.assertEqual([p[9] for p in packets], [0, 1, 2])
+        for p in packets:
+            self.assertEqual(p[0:9], packets[0][0:9])
+            self.assertEqual(sum(p[1:]) & 0xff, 0xff)
+
     def test_android_network_values(self):
         self.assertEqual(ANDROID_CONTROL_PORT, 8080)
         self.assertEqual(ANDROID_SEND_PERIOD, 0.025)
