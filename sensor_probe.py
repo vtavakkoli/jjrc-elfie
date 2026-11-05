@@ -152,13 +152,22 @@ def _printable(payload: bytes) -> str | None:
 
 
 def _identity_label(payload: bytes) -> str | None:
-    readable = _printable(payload)
+    # Original Android getDevType() may return ASCII followed by NUL padding,
+    # e.g. 56 47 41 00 00 means "VGA", not a telemetry data packet.
+    readable = _printable(payload.rstrip(b"\\x00"))
     if not readable:
         return None
     # Android's onUdpReceiveData() recognizes identity prefixes, e.g. VGA.
     id_prefixes = ("VGA", "VGA2", "MJVG", "VSVG", "UDP", "720P", "1080P",
                    "HI2K", "HI4K", "drone")
     if readable.startswith(id_prefixes):
+        return readable
+    return None
+
+
+def _firmware_version(payload: bytes) -> str | None:
+    readable = _printable(payload.rstrip(b"\\x00"))
+    if readable and re.fullmatch(r"V\\d+\\.\\d+\\.\\d+(?:[A-Za-z0-9_-]+)?", readable):
         return readable
     return None
 
@@ -177,6 +186,7 @@ class ProbeReport:
         self.groups: dict[str, dict[str, Any]] = {}
         self.printable_messages: list[str] = []
         self.device_identifiers: list[str] = []
+        self.firmware_versions: list[str] = []
         self.sensor_samples: dict[str, list[dict[str, Any]]] = {
             "gyro": [], "accelerometer": [], "barometer": [],
             "altitude_unverified_source": [],
@@ -211,6 +221,10 @@ class ProbeReport:
         if identity is not None and identity not in self.device_identifiers:
             if len(self.device_identifiers) < MAX_TEXT_MESSAGES:
                 self.device_identifiers.append(identity)
+        version = _firmware_version(payload)
+        if version is not None and version not in self.firmware_versions:
+            if len(self.firmware_versions) < MAX_TEXT_MESSAGES:
+                self.firmware_versions.append(version)
         observations = interpret_sensor_text(payload)
         for key in self.sensor_samples:
             if key in observations and len(self.sensor_samples[key]) < MAX_SENSOR_SAMPLES:
@@ -235,6 +249,7 @@ class ProbeReport:
             "total_bytes": self.total_bytes,
             "received_by_channel": dict(self.port_counts),
             "device_identifiers": self.device_identifiers,
+            "firmware_versions": self.firmware_versions,
             "sensor_availability": {
                 "gyroscope": {"status": state(gyro), "samples": self.sensor_samples["gyro"]},
                 "accelerometer": {"status": state(accel), "samples": self.sensor_samples["accelerometer"]},
@@ -329,6 +344,7 @@ def run_probe(host: str = "172.16.10.1", duration: float = 20.0,
     print("\nRESULT")
     print("Packets received:", data["total_packets"])
     print("Device identifiers:", ", ".join(data["device_identifiers"]) or "not observed")
+    print("Firmware versions:", ", ".join(data["firmware_versions"]) or "not observed")
     for name, entry in data["sensor_availability"].items():
         print(f"  {name:22s}: {entry['status']}")
     if data["warnings"]:
