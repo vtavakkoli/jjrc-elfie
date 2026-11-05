@@ -55,14 +55,17 @@ When F is pressed, the application:
 4. Applies **small, bounded roll/pitch corrections** (default maximum 22% of joystick range).
 5. Disables F and sends neutral axes when video stalls, tracking quality degrades, the image moves too far, UDP fails, window focus is lost, or the pilot moves a stick, lands or stops.
 
-The overlay shows `ACQUIRING`, `TRACKING`, or an explicit disengagement reason. `TRACKING` means only that visual features match, **not** that the drone is stationary. It cannot estimate actual location, height, distance, velocity in meters/second, or guarantee stable hover. The sign and strength of corrections have **not** been confirmed on real hardware. Incorrect corrections can accelerate drift.
+The overlay shows `ACQUIRING`, `TRACKING`, or an explicit disengagement reason. With `--hold-observe-only`, the tracker runs normally but automatic roll/pitch commands are blocked. `TRACKING` means only that visual features match, **not** that the drone is stationary. It cannot estimate actual location, height, distance, velocity in meters/second, or guarantee stable hover. The sign and strength of corrections have **not** been confirmed on real hardware. Incorrect corrections can accelerate drift.
 
-**Initial test sequence:** With propellers removed, first verify the camera is live and that F stays unavailable while the drone is disarmed. Verify F can be toggled off and that stale video disables it. Next, with the drone *powered off*, test visual motion with a prerecorded/simulated frame source. Do not attempt an untethered autonomous hover until correction directions have been independently validated in a controlled flight-test setup. If F produces unexpected movement, press **Space** to cancel it immediately; **X** stops motors but causes loss of lift.
+**Initial test sequence:** With propellers removed, first verify the camera is live, press T to enable the flight state, and use `--hold-observe-only` to check whether F acquires a stable reference while moving the aircraft by hand with motors stopped. In observation-only mode, F computes and displays estimated corrections but **does not send them to the drone**. Test loss-of-video and Space/manual override too. The signs and gains of any automatic correction must be calibrated in controlled conditions before attempting free flight. If F causes unexpected movement during a controlled test, press **Space** to disable it immediately; **X** stops motors but causes loss of lift.
 
 Optional tuning (only after bench validation):
 
 ```powershell
-# Restrict camera corrections to 10% of stick travel
+# Start with SAFE camera observation only: no automatic movement sent
+python main.py --hold-observe-only
+
+# Restrict active camera corrections to 10% of stick travel
 python main.py --hold-max-command 0.10
 
 # Run normal manual flight control without video; F is unavailable
