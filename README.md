@@ -1,15 +1,13 @@
-# JJRC Elfie — FPV Flight Deck
+# JJRC Elfie — Original Android Flight Deck
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/downloads/)
-[![Tests](https://github.com/vtavakkoli/jjrc-elfie/actions/workflows/python-checks.yml/badge.svg?branch=master)](https://github.com/vtavakkoli/jjrc-elfie/actions/workflows/python-checks.yml)
+[![Python CI](https://github.com/vtavakkoli/jjrc-elfie/actions/workflows/python-checks.yml/badge.svg?branch=master)](https://github.com/vtavakkoli/jjrc-elfie/actions/workflows/python-checks.yml)
 
-Python 3.12 keyboard flight controller for JJRC-compatible drones with a Pygame interface.
+A clean Windows/Linux desktop controller for the original JJRC Android drone. **Only the original Android 11-byte protocol is supported.** Takeoff, altitude response, steering, landing, emergency stop and speed selection have been confirmed by the drone owner. The experimental **F = camera-assisted visual hold** mode is new and has **not been physically tested or calibrated**.
 
-> **New 5 November 2026:** `python main.py` now sends the **original Android app's 11-byte UDP packet** to port **8080** every **25 ms**. This packet layout was reconstructed from the supplied decompiled Android `ControlActivity.SendThread.run()`. It has **not yet been tested with a physical drone**. The previous **8-byte H37 mode**, which previously worked for video, motor start, ascent and emergency stop on a test drone, remains available via `--protocol h37`.
+## Quick start
 
-## Installation
-
-Connect your computer to the drone's Wi-Fi before running in flight mode.
+Connect your computer to the drone's Wi-Fi first.
 
 ```powershell
 git clone https://github.com/vtavakkoli/jjrc-elfie.git
@@ -17,90 +15,81 @@ cd jjrc-elfie
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python main.py --demo
 python main.py
 ```
 
-Windows or Linux with Python 3.12; dependencies include Pygame and PyAV. Use `python main.py --no-video` to test flight control packets without needing a working video stream.
+If you already installed the project, run `git pull origin master` and `python -m pip install -r requirements.txt` again; optical tracking requires OpenCV.
 
-## Default: original Android control protocol
+The program uses the original Android control packets (`FF 08 ...`, 11 bytes, additive-complement checksum), UDP port **8080**, approximately 40 Hz target sending, default host **172.16.10.1**. Set `--host` if your drone Wi-Fi Default Gateway differs. The existing TCP H.264 camera receiver uses port **8888**.
 
-| Setting | Original Android mode (`python main.py`) | Legacy H37 (`python main.py --protocol h37`) |
-| --- | --- | --- |
-| UDP port | **8080** | 8895 |
-| Datagram | **11 bytes: `FF 08 ... checksum`** | 8 bytes: `66 ... 99` |
-| Checksum | 255 minus payload byte sum (modulo 256) | XOR |
-| Cadence | **40 Hz** | 20 Hz |
-| Modes | Original speed mode 0, 1, 2 | Software gain 10–80% |
-| Startup | Android sends controls immediately | 5 s idle, 5 s altitude-hold |
+## Controls
 
-Android byte layout: `FF 08 [throttle] [yaw] [pitch] [roll] [yaw trim + alt hold + calibrate] [pitch trim] [roll trim] [speed + headless + stop + takeoff + land] [checksum]`.
-
-The exact format is implemented in [android_protocol.py](android_protocol.py). Original Android rocker coordinates run from 0 to 127; the desktop maps keyboard input to these coordinates. Neutral manual throttle is byte 0; neutral altitude-hold throttle is byte 126. Firmware-specific direction reversal is supported for `UDP_720` firmware `V2.3.9`, `V2.4.0`, and `V2.4.1`.
-
-## Keyboard controls in original Android mode
-
-| Key | Function |
+| Key | Action |
 | --- | --- |
-| **W / S** | Forward / backward pitch |
+| **T** | Request takeoff and enable the drone's own altitude hold |
+| **Up / Down** | Climb / descend when altitude hold is active |
+| **W / S** | Pitch forward / backward |
 | **A / D** | Roll left / right |
-| **Up / Down** | Altitude movement in hold mode; change latched throttle in manual mode |
-| **Left / Right** | Yaw / rotate |
-| **T** | Takeoff pulse (turns on altitude hold automatically) |
-| **L** | Landing pulse |
-| **X** | Emergency motor-stop pulse (can cause a fall) |
-| **H** | Toggle altitude hold when not armed |
-| **N** | Headless mode toggle |
-| **C** | Calibration pulse while disarmed; aircraft must be stationary |
-| **+ / -** | Cycle Android speed mode 0 / 1 / 2 (international keyboard layouts supported) |
-| **Space** | Neutral motion; in manual mode also sets throttle to zero |
-| **Esc** | Quit and send a zero-throttle packet (not a guaranteed landing) |
+| **Left / Right arrows** | Yaw / rotate |
+| **F** | Toggle **experimental camera-assisted visual hold** (requires video and completed takeoff) |
+| **L** | Request landing; disables F |
+| **X** | Emergency stop motors; disables F and may cause an uncontrolled fall |
+| **Space** | Neutral input, disables F |
+| **H** | Toggle altitude hold (disarmed only) |
+| **N** | Toggle headless mode |
+| **C** | Calibration request (disarmed, stationary drone only) |
+| **+ / −** | Cycle original Android speed modes 0 / 1 / 2 |
+| **Esc** | Exit; sends one neutral packet, **not** a safe landing guarantee |
 
-**Directional fix (5 November 2026):** The first Android desktop implementation mistakenly used 30% analog gain for the right stick and yaw stick (values near 44–82 around neutral 63), which could make commands too weak for the drone to respond. The default is now **75% stick travel** (approximately 15–111) for W/S, A/D and yaw. The original Android speed selection is **separate**: packet byte 9 bits 0–1 contain speed mode 0, 1 or 2. Plus and minus now support German/Austrian keyboard mappings. If 75% directional input is too strong or too weak, choose `--stick-gain 0.5` or `--stick-gain 1.0`, respectively; verify with propellers removed before any flight. The Java source explicitly includes `FF 08` as the header, so **do not remove it**.
+Window losing focus also cancels F and sends neutral movement input. Manual W/S/A/D/arrow keys immediately cancel F and return control to the pilot.
 
-**Important:** The original Android app defaults to manual throttle, which does not spring back to neutral; the desktop emulates that with a throttle latch. Up increases it gradually; releasing Up retains the throttle position. **Up can spin motors in manual mode even without pressing T.** The safest way to evaluate command encoding is with propellers removed. Pressing **T** enables altitude hold and sends the Android takeoff bit for one second, matching the original app's takeoff control bits (while saving the separate ALT button click).
+## F: experimental visual landmark stabilization
 
-## Test commands
+**This is not true 3-D position hold. Do not rely on it to avoid collisions, prevent drifting, or maintain a fixed height.** A forward-facing single camera can confuse drone translation with camera pitch/yaw and changes in landmark depth. A true hover controller normally needs additional sensors and calibrated flight dynamics. The drone's built-in altitude-hold mode handles altitude to the extent its firmware can; the camera code **does not command vertical throttle or yaw**.
+
+When F is pressed, the application:
+
+1. Requires takeoff to have completed, altitude hold to be enabled, and a fresh live video frame.
+2. Acquires a landmark reference image using OpenCV ORB features.
+3. Estimates relative image translation and apparent landmark scale using RANSAC.
+4. Applies **small, bounded roll/pitch corrections** (default maximum 22% of joystick range).
+5. Disables F and sends neutral axes when video stalls, tracking quality degrades, the image moves too far, UDP fails, window focus is lost, or the pilot moves a stick, lands or stops.
+
+The overlay shows `ACQUIRING`, `TRACKING`, or an explicit disengagement reason. `TRACKING` means only that visual features match, **not** that the drone is stationary. It cannot estimate actual location, height, distance, velocity in meters/second, or guarantee stable hover. The sign and strength of corrections have **not** been confirmed on real hardware. Incorrect corrections can accelerate drift.
+
+**Initial test sequence:** With propellers removed, first verify the camera is live and that F stays unavailable while the drone is disarmed. Verify F can be toggled off and that stale video disables it. Next, with the drone *powered off*, test visual motion with a prerecorded/simulated frame source. Do not attempt an untethered autonomous hover until correction directions have been independently validated in a controlled flight-test setup. If F produces unexpected movement, press **Space** to cancel it immediately; **X** stops motors but causes loss of lift.
+
+Optional tuning (only after bench validation):
 
 ```powershell
-# New default: original Android control protocol, UDP 8080
-python main.py
+# Restrict camera corrections to 10% of stick travel
+python main.py --hold-max-command 0.10
 
-# Isolate flight controls from unverified video compatibility
+# Run normal manual flight control without video; F is unavailable
 python main.py --no-video
 
-# If the drone Wi-Fi Default Gateway isn't 172.16.10.1:
-python main.py --host 192.168.1.1 --no-video
+# Preview UI and packets without connecting to hardware
+python main.py --demo
 
-# Start with altitude hold active instead of original manual mode
-python main.py --altitude-hold
-
-# If the original firmware reports this version and device type
+# Firmware-specific right-stick/yaw reversal if your device requires it
 python main.py --device-type UDP_720 --firmware-version V2.4.0
 
-# Revert to the old working H37 controller
-python main.py --protocol h37
+# Original Android manual control input sensitivity
+python main.py --stick-gain 0.75
 
-# 75% directional stick travel is the default. Full stick for isolated testing:
-python main.py --stick-gain 1.0 --no-video
-
-# Run tests without hardware
+# Run regression and synthetic image tests
 python -m unittest discover -s tests -v
 ```
 
-The original Android app selects the drone host from the Wi-Fi DHCP gateway. This desktop controller currently defaults to the previously used `172.16.10.1`; check your drone Wi-Fi **Default Gateway** and use `--host` if it differs.
+## Repository structure
 
-**Video:** The desktop's existing H.264/TCP receiver on port 8888 was developed for the legacy H37 drone. The supplied Android app uses firmware-dependent video transport and it is **not established** that the desktop receiver can show its video. A missing video stream does not prevent UDP control packets. Use `--no-video` for the first flight-control protocol test.
+- [main.py](main.py) — original Android flight deck, keyboard controls, video and status UI
+- [android_protocol.py](android_protocol.py) — original Android packet encoder (takeoff/land/stop, speed, trim and altitude-hold flags)
+- [vision_hold.py](vision_hold.py) — optional bounded camera feature tracker with loss-of-tracking cutoff
+- [tests/test_android_protocol.py](tests/test_android_protocol.py) — protocol vectors and control-bit tests
+- [tests/test_vision_hold.py](tests/test_vision_hold.py) — synthetic-image vision and UDP regressions
+- [.github/workflows/python-checks.yml](.github/workflows/python-checks.yml) — Windows/Ubuntu Python 3.12 CI
 
-**Connection limitations:** A successful UDP send confirms only local transmission, never drone reception. There is no command acknowledgement, telemetry confirmation, battery monitor, guaranteed radio failsafe or automatic landing. Tests require **propellers removed** until packet behavior is confirmed.
+**Limitations:** This is experimental software, not a certified flight controller. A successful UDP send is not proof that the drone has received or executed it. The app has no battery, inertial, altimeter, obstacle or GPS telemetry, no confirmed radio-loss failsafe, and no guaranteed safe landing on application exit. Keep the aircraft in sight, use an unobstructed test area, and maintain direct manual intervention.
 
-## Files
-
-- [main.py](main.py): Pygame UI, UDP transport and selectable flight protocol
-- [android_protocol.py](android_protocol.py): original Android 11-byte packet construction
-- [tests/test_android_protocol.py](tests/test_android_protocol.py): neutral packet vectors, flags, checksum, trims and direction reversal
-- [tests/test_main.py](tests/test_main.py): legacy H37 protocol and UDP loopback
-- [tests/test_drone.py](tests/test_drone.py): older Python 2 implementation regressions
-- [.github/workflows/python-checks.yml](.github/workflows/python-checks.yml): Python 3.12 CI for Windows and Linux
-
-The legacy implementation is based on earlier protocol work by Max Golubev and Adria Junyent-Ferré. MIT license; preserve original attribution when redistributing.
+Distributed under the MIT license.
