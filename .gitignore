@@ -14,3 +14,5 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+# Local read-only network diagnostics (may include Wi-Fi IP/device identifiers)
+sensor_probe*.json
