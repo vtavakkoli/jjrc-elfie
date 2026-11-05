@@ -264,6 +264,8 @@ def parse_args():
                    help="Manual W/S/A/D/yaw deflection, 0.1 - 1.0")
     p.add_argument("--hold-max-command", type=float, default=0.22,
                    help="Camera F correction limit, 0.05 - 0.35 (experimental)")
+    p.add_argument("--hold-observe-only", action="store_true",
+                   help="F tracks visual motion but NEVER sends automatic roll/pitch")
     args = p.parse_args()
     if not 0.1 <= args.stick_gain <= 1.0:
         p.error("--stick-gain must be between 0.1 and 1.0")
@@ -320,7 +322,9 @@ def main():
                     hold.disable("FOCUS LOST - HOLD OFF")
                 elif event.type == pygame.WINDOWFOCUSGAINED:
                     focused = True
-                elif event.type == pygame.KEYDOWN and not event.repeat if hasattr(event, "repeat") else event.type == pygame.KEYDOWN:
+                elif event.type == pygame.KEYDOWN:
+                    if getattr(event, "repeat", False):
+                        continue
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_x:
@@ -355,7 +359,9 @@ def main():
                         else:
                             hold.enable(now)
                             hold.submit(frame, frame_time)
-                            message = "F acquiring visual landmarks; neutral controls until lock"
+                            message = ("F observing landmarks (NO automatic correction)"
+                                       if args.hold_observe_only else
+                                       "F acquiring visual landmarks; neutral controls until lock")
                     elif event.key == pygame.K_h and not armed_requested:
                         hold.disable("MODE CHANGED - HOLD OFF")
                         altitude_hold = not altitude_hold
@@ -418,7 +424,11 @@ def main():
                 roll = pitch = throttle = yaw = 0.0
             elif vision.enabled and vision.state == "TRACKING":
                 # No camera-driven throttle or yaw: altitude hold is firmware-native.
-                roll, pitch, throttle, yaw = vision.roll, vision.pitch, 0.0, 0.0
+                # Observe-only is useful to verify image estimates without actuation.
+                roll, pitch, throttle, yaw = (
+                    (0.0, 0.0, 0.0, 0.0) if args.hold_observe_only
+                    else (vision.roll, vision.pitch, 0.0, 0.0)
+                )
             elif vision.enabled:
                 roll = pitch = throttle = yaw = 0.0
             else:
@@ -458,7 +468,8 @@ def main():
             toolbar_x = pill(screen, small, (toolbar_x, toolbar_y),
                              "VIDEO LIVE" if video_fresh else "VIDEO WAITING", active=video_fresh) + 7
             pill(screen, small, (toolbar_x, toolbar_y),
-                 "F HOLD" if vision.enabled else "F OFF",
+                 ("F OBSERVE" if args.hold_observe_only else "F HOLD")
+                 if vision.enabled else "F OFF",
                  active=vision.enabled, danger=vision.state.startswith("VISUAL HOLD OFF"))
 
             viewport = pygame.Rect(24, 91, max(240, w - 48), max(170, h - 329))
@@ -505,7 +516,10 @@ def main():
             hold_color = GREEN if vision.state == "TRACKING" else AMBER if vision.enabled else MUTED
             draw_text(screen, body, vision.state[:37], (right.x + 18, right.y + 47), hold_color)
             draw_text(screen, small, "F toggles. Movement / SPACE cancels.", (right.x + 18, right.y + 80), MUTED)
-            draw_text(screen, small, "No GPS, altitude or 3-D pose estimate.", (right.x + 18, right.y + 107), MUTED)
+            draw_text(screen, small,
+                      ("OBSERVE ONLY - no auto movement" if args.hold_observe_only
+                       else "No GPS, altitude or 3-D pose estimate."),
+                      (right.x + 18, right.y + 107), MUTED)
             draw_text(screen, small, "UDP TX {:,}   errors {}".format(flight.sent_count, flight.error_count),
                       (right.x + 18, right.y + 138), RED if flight.last_error else GREEN)
             draw_text(screen, small, "VIDEO {}".format(video_status[:30]),
