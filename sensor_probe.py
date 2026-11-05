@@ -154,7 +154,7 @@ def _printable(payload: bytes) -> str | None:
 def _identity_label(payload: bytes) -> str | None:
     # Original Android getDevType() may return ASCII followed by NUL padding,
     # e.g. 56 47 41 00 00 means "VGA", not a telemetry data packet.
-    readable = _printable(payload.rstrip(b"\\x00"))
+    readable = _printable(payload.rstrip(b"\x00"))
     if not readable:
         return None
     # Android's onUdpReceiveData() recognizes identity prefixes, e.g. VGA.
@@ -166,8 +166,8 @@ def _identity_label(payload: bytes) -> str | None:
 
 
 def _firmware_version(payload: bytes) -> str | None:
-    readable = _printable(payload.rstrip(b"\\x00"))
-    if readable and re.fullmatch(r"V\\d+\\.\\d+\\.\\d+(?:[A-Za-z0-9_-]+)?", readable):
+    readable = _printable(payload.rstrip(b"\x00"))
+    if readable and re.fullmatch(r"V\d+\.\d+\.\d+(?:[A-Za-z0-9_-]+)?", readable):
         return readable
     return None
 
