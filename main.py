@@ -240,10 +240,14 @@ def main():
     parser.add_argument("--trim-roll", type=int, default=16, choices=range(33))
     parser.add_argument("--altitude-hold", action="store_true",
                         help="Start original Android protocol with altitude hold enabled")
+    parser.add_argument("--stick-gain", type=float, default=0.75,
+                        help="Keyboard stick deflection for Android controls (0.1 to 1.0, default 0.75)")
     parser.add_argument("--local-ip", help="Bind UDP to this Wi-Fi IPv4 address (default: auto from video connection)")
     parser.add_argument("--demo", action="store_true", help="Preview interface without sending commands")
     args = parser.parse_args()
     is_android = args.protocol == "android"
+    if not 0.1 <= args.stick_gain <= 1.0:
+        parser.error("--stick-gain must be between 0.1 and 1.0")
     if args.control_port is None:
         args.control_port = ANDROID_CONTROL_PORT if is_android else 8895
     reverse_direction = args.reverse_direction or reverse_for_firmware(
@@ -265,7 +269,9 @@ def main():
         shutdown_packet=android_packet() if is_android else HOLD_PACKET,
     )
     video = VideoLink(args.host, args.video_port, demo=(args.demo or args.no_video))
-    speed = 0.30  # Normalized joystick displacement; not Android speed mode.
+    speed = 0.30  # Legacy H37 analog gain (independent of Android speed mode).
+    stick_gain = args.stick_gain  # Android keyboard displacement into 0..127 sticks.
+    # Android app never limits joystick deflection to 30% at speed mode 0.
     speed_mode = 0
     altitude_hold = args.altitude_hold if is_android else True
     headless = False
@@ -329,14 +335,21 @@ def main():
                         # Original Android calibration: flag in packet byte 6.
                         active_command, command_until = 8, now + 1.0
                         mode = "CALIBRATION REQUESTED"
-                    elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):
+                    # Support physical PLUS keys on international keyboards,
+                    # including German/Austrian layouts where '+' is not '='.
+                    elif (event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS,
+                                        getattr(pygame, "K_PLUS", -1))
+                          or getattr(event, "unicode", "") == "+"):
                         if is_android:
-                            speed_mode = min(2, speed_mode + 1)
+                            speed_mode = (speed_mode + 1) % 3
+                            mode = "ANDROID SPEED MODE {} / 2".format(speed_mode)
                         else:
                             speed = min(0.8, round(speed + 0.05, 2))
-                    elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    elif (event.key in (pygame.K_MINUS, pygame.K_KP_MINUS)
+                          or getattr(event, "unicode", "") == "-"):
                         if is_android:
-                            speed_mode = max(0, speed_mode - 1)
+                            speed_mode = (speed_mode - 1) % 3
+                            mode = "ANDROID SPEED MODE {} / 2".format(speed_mode)
                         else:
                             speed = max(0.1, round(speed - 0.05, 2))
                     elif event.key == pygame.K_SPACE and is_android and not altitude_hold:
@@ -362,9 +375,13 @@ def main():
             controls_enabled = (focused and now >= command_until
                                 and (armed_requested or (is_android and not altitude_hold)))
             if controls_enabled and not keys[pygame.K_SPACE]:
-                roll = speed * (int(keys[pygame.K_d]) - int(keys[pygame.K_a]))
-                pitch = speed * (int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
-                yaw = speed * (int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]))
+                # Android SendThread sends raw RockerView values (0..127).
+                # Keyboard presses must have enough stick travel to be distinct
+                # from center; firmware speed remains in packet byte 9 bits 0..1.
+                direction_gain = stick_gain if is_android else speed
+                roll = direction_gain * (int(keys[pygame.K_d]) - int(keys[pygame.K_a]))
+                pitch = direction_gain * (int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
+                yaw = direction_gain * (int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]))
                 throttle = (manual_throttle if is_android and not altitude_hold else
                             speed * (int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN])))
             else:
@@ -448,8 +465,9 @@ def main():
                        "T ARM    L LAND    X EMERGENCY STOP    SPACE NEUTRAL    +/- SPEED    ESC QUIT"),
                       (28, y + 75))
             draw_text(screen, small,
-                      ("ANDROID SPEED MODE {}  {}  THR {:+.2f}  ROLL {:+.2f}  PITCH {:+.2f}  YAW {:+.2f}".format(
-                          speed_mode, "ALT-HOLD" if altitude_hold else "MANUAL",
+                      ("ANDROID SPEED {}  STICK {:2.0f}%  {}  THR {:+.2f}  R {:+.2f}  P {:+.2f}  Y {:+.2f}".format(
+                          speed_mode, stick_gain * 100,
+                          "ALT-HOLD" if altitude_hold else "MANUAL",
                           throttle, roll, pitch, yaw) if is_android else
                        "GAIN {:2.0f}%   ROLL {:+.2f}   PITCH {:+.2f}   ALT {:+.2f}   YAW {:+.2f}".format(
                           speed * 100, roll, pitch, throttle, yaw)),
