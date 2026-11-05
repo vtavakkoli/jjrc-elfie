@@ -14,6 +14,11 @@ import time
 import av
 import pygame
 
+from android_protocol import (
+    ANDROID_CONTROL_PORT, ANDROID_SEND_PERIOD, android_packet,
+    reverse_for_firmware,
+)
+
 
 VIDEO_HELLO = bytes.fromhex("495464000000580000009bf89049c926884d4f922b3b33ba7eceacef63f77157ab2f53e3f768ecd9e18547b8c22e21d01bfb6b3de3"    
                             "25a27b8fb3acef63f77157ab2f53e3f768ecd9e185eb20be383aab05a8c2a71f2c906d93f72a85e7356effe1b8f5af097f9147f87e"
@@ -50,8 +55,9 @@ class FlightLink:
     A successful send only confirms local transmission, not drone reception.
     """
 
-    def __init__(self, host, port, demo=False, local_ip=None):
+    def __init__(self, host, port, demo=False, local_ip=None, shutdown_packet=HOLD_PACKET):
         self.address = (host, port)
+        self.shutdown_packet = shutdown_packet
         self.demo = demo
         self.preferred_ip = local_ip
         self.local_ip = local_ip or "0.0.0.0"
@@ -118,7 +124,7 @@ class FlightLink:
         # Neutral command only: not an automatic land or a safety guarantee.
         if self.sock is not None:
             try:
-                self.sock.sendto(HOLD_PACKET, self.address)
+                self.sock.sendto(self.shutdown_packet, self.address)
             except OSError:
                 pass
             self.sock.close()
@@ -216,11 +222,34 @@ def draw_pill(surface, font, text, x, y, active=False):
 def main():
     parser = argparse.ArgumentParser(description="JJRC H37 Elfie keyboard FPV controller")
     parser.add_argument("--host", default="172.16.10.1")
-    parser.add_argument("--control-port", type=int, default=8895)
+    parser.add_argument("--protocol", choices=("android", "h37"), default="android",
+                        help="Original Android 11-byte controls (default), or legacy H37 8-byte controls")
+    parser.add_argument("--control-port", type=int, default=None,
+                        help="UDP destination (Android: 8080; H37: 8895)")
     parser.add_argument("--video-port", type=int, default=8888)
+    parser.add_argument("--no-video", action="store_true",
+                        help="Disable video connection for flight-packet testing")
+    parser.add_argument("--firmware-version", default="",
+                        help="Android firmware version, e.g. V2.4.0 (enables documented direction correction)")
+    parser.add_argument("--device-type", default="",
+                        help="Android device type, e.g. UDP_720")
+    parser.add_argument("--reverse-direction", action="store_true",
+                        help="Explicitly reverse Android yaw and roll fields")
+    parser.add_argument("--trim-yaw", type=int, default=16, choices=range(33))
+    parser.add_argument("--trim-pitch", type=int, default=16, choices=range(33))
+    parser.add_argument("--trim-roll", type=int, default=16, choices=range(33))
+    parser.add_argument("--altitude-hold", action="store_true",
+                        help="Start original Android protocol with altitude hold enabled")
     parser.add_argument("--local-ip", help="Bind UDP to this Wi-Fi IPv4 address (default: auto from video connection)")
     parser.add_argument("--demo", action="store_true", help="Preview interface without sending commands")
     args = parser.parse_args()
+    is_android = args.protocol == "android"
+    if args.control_port is None:
+        args.control_port = ANDROID_CONTROL_PORT if is_android else 8895
+    reverse_direction = args.reverse_direction or reverse_for_firmware(
+        args.device_type, args.firmware_version
+    )
+    send_period = ANDROID_SEND_PERIOD if is_android else 0.05
 
     pygame.init()
     screen = pygame.display.set_mode((1100, 760), pygame.RESIZABLE)
@@ -231,9 +260,17 @@ def main():
     tiny = pygame.font.SysFont("consolas", 14)
     clock = pygame.time.Clock()
 
-    flight = FlightLink(args.host, args.control_port, demo=args.demo, local_ip=args.local_ip)
-    video = VideoLink(args.host, args.video_port, demo=args.demo)
-    speed = 0.30
+    flight = FlightLink(
+        args.host, args.control_port, demo=args.demo, local_ip=args.local_ip,
+        shutdown_packet=android_packet() if is_android else HOLD_PACKET,
+    )
+    video = VideoLink(args.host, args.video_port, demo=(args.demo or args.no_video))
+    speed = 0.30  # Normalized joystick displacement; not Android speed mode.
+    speed_mode = 0
+    altitude_hold = args.altitude_hold if is_android else True
+    headless = False
+    manual_throttle = 0.0
+    last_input_time = time.monotonic()
     last_send = 0.0
     start_time = time.monotonic()
     command_until = 0.0
@@ -242,7 +279,10 @@ def main():
     armed_requested = False
     focused = True
     mode = "STARTING"
-    notice = "Startup takes 10s. Remove propellers for first test. UDP TX cannot confirm reception."
+    notice = ("ORIGINAL ANDROID / UDP 8080. T TAKEOFF (enables ALT). "
+              "PROPELLERS OFF for first test. No command ACK."
+              if is_android else
+              "H37 startup 10s. Remove propellers for first test. No command ACK.")
     flight.open()
     video.start()
 
@@ -260,22 +300,47 @@ def main():
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_x:
-                        # Cut motors (may cause uncontrolled drop). Works even if not armed.
-                        active_command, command_until = 4, now + 1.05
+                        # Android bit 5; H37 command 0x04. Cuts motors in flight.
+                        active_command, command_until = 4, now + 1.0
                         armed_requested = False
-                        mode = "EMERGENCY STOP REQUESTED"
+                        manual_throttle = 0.0
+                        mode = "EMERGENCY MOTOR STOP REQUESTED"
                     elif event.key == pygame.K_l and now >= command_until:
-                        active_command, command_until = 2, now + 1.05
+                        active_command, command_until = 2, now + 1.0
                         armed_requested = False
-                        mode = "LAND REQUESTED"
-                    elif event.key == pygame.K_t and now - start_time >= 10.0 and now >= command_until:
-                        active_command, command_until = 1, now + 1.05
-                        armed_requested = True
-                        mode = "ARM REQUESTED"
+                        manual_throttle = 0.0
+                        mode = "LAND REQUESTED (NOT ACKNOWLEDGED)"
+                    elif event.key == pygame.K_t and now >= command_until:
+                        if is_android:
+                            # Original app exposes takeoff only in atmospheric mode.
+                            altitude_hold = True
+                            manual_throttle = 0.0
+                        if is_android or now - start_time >= 10.0:
+                            active_command, command_until = 1, now + 1.0
+                            armed_requested = True
+                            mode = "ANDROID TAKEOFF REQUESTED" if is_android else "H37 ARM REQUESTED"
+                    elif event.key == pygame.K_h and is_android and not armed_requested:
+                        altitude_hold = not altitude_hold
+                        manual_throttle = 0.0
+                        mode = "ALTITUDE HOLD ON" if altitude_hold else "MANUAL THROTTLE ON"
+                    elif event.key == pygame.K_n and is_android:
+                        headless = not headless
+                    elif event.key == pygame.K_c and is_android and not armed_requested and now >= command_until:
+                        # Original Android calibration: flag in packet byte 6.
+                        active_command, command_until = 8, now + 1.0
+                        mode = "CALIBRATION REQUESTED"
                     elif event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):
-                        speed = min(0.8, round(speed + 0.05, 2))
+                        if is_android:
+                            speed_mode = min(2, speed_mode + 1)
+                        else:
+                            speed = min(0.8, round(speed + 0.05, 2))
                     elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-                        speed = max(0.1, round(speed - 0.05, 2))
+                        if is_android:
+                            speed_mode = max(0, speed_mode - 1)
+                        else:
+                            speed = max(0.1, round(speed - 0.05, 2))
+                    elif event.key == pygame.K_SPACE and is_android and not altitude_hold:
+                        manual_throttle = 0.0
 
             frame, frame_time, video_status, video_local_ip = video.snapshot()
             # TCP video already found the correct route to the drone. Use its IPv4
@@ -284,17 +349,47 @@ def main():
                 flight.open(video_local_ip)
 
             keys = pygame.key.get_pressed()
-            controls_enabled = focused and armed_requested and now >= command_until
+            dt = min(0.05, max(0.0, now - last_input_time))
+            last_input_time = now
+            if is_android and not altitude_hold:
+                # Android's manual left throttle stick does not self-center.
+                # Keyboard Up/Down therefore changes an absolute throttle latch.
+                if not focused or keys[pygame.K_SPACE]:
+                    manual_throttle = 0.0
+                elif now >= command_until:
+                    step = int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN])
+                    manual_throttle = max(0.0, min(1.0, manual_throttle + step * dt * 0.35))
+            controls_enabled = (focused and now >= command_until
+                                and (armed_requested or (is_android and not altitude_hold)))
             if controls_enabled and not keys[pygame.K_SPACE]:
                 roll = speed * (int(keys[pygame.K_d]) - int(keys[pygame.K_a]))
                 pitch = speed * (int(keys[pygame.K_w]) - int(keys[pygame.K_s]))
-                throttle = speed * (int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN]))
                 yaw = speed * (int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT]))
+                throttle = (manual_throttle if is_android and not altitude_hold else
+                            speed * (int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN])))
             else:
                 roll = pitch = throttle = yaw = 0.0
 
-            if now - last_send >= 0.05:
-                if now - start_time < 5.0:
+            if now - last_send >= send_period:
+                if is_android:
+                    command_active = now < command_until
+                    data = android_packet(
+                        roll, pitch, throttle, yaw,
+                        altitude_hold=altitude_hold, speed_mode=speed_mode,
+                        headless=headless,
+                        calibrate=command_active and active_command == 8,
+                        emergency_stop=command_active and active_command == 4,
+                        takeoff=command_active and active_command == 1,
+                        land=command_active and active_command == 2,
+                        trim_yaw=args.trim_yaw, trim_pitch=args.trim_pitch,
+                        trim_roll=args.trim_roll,
+                        reverse_direction=reverse_direction,
+                    )
+                    if not command_active:
+                        active_command = 0
+                        if mode == "STARTING":
+                            mode = "ANDROID READY / T TAKEOFF / H ALT-HOLD"
+                elif now - start_time < 5.0:
                     data = IDLE_PACKET
                     mode = "INITIALIZING IDLE  /  {}s".format(max(0, int(5 - (now - start_time))))
                 elif now - start_time < 10.0:
@@ -313,7 +408,7 @@ def main():
             width, height = screen.get_size()
             screen.fill(DARK)
             draw_text(screen, title_font, "ELFIE  /  FPV FLIGHT DECK", (24, 12))
-            draw_text(screen, small, "SIMULATION" if args.demo else args.host, (max(24, width - 205), 27), BLUE)
+            draw_text(screen, small, "SIMULATION" if args.demo else "{}  [{}]".format(args.host, args.protocol.upper()), (max(24, width - 205), 27), BLUE)
             video_bottom = max(240, height - 228)
             viewport = pygame.Rect(24, 66, max(200, width - 48), video_bottom - 66)
             pygame.draw.rect(screen, PANEL, viewport, border_radius=12)
@@ -348,11 +443,16 @@ def main():
                       "W/S FORWARD/BACK    A/D LEFT/RIGHT    UP/DOWN ASCEND/DESCEND    LEFT/RIGHT TURN",
                       (28, y + 43))
             draw_text(screen, small,
-                      "T ARM    L LAND    X EMERGENCY STOP    SPACE NEUTRAL    +/- SPEED    ESC QUIT",
+                      ("T TAKEOFF  L LAND  X STOP  H ALT-HOLD  N HEADLESS  C CALIBRATE  +/- MODE  ESC QUIT"
+                       if is_android else
+                       "T ARM    L LAND    X EMERGENCY STOP    SPACE NEUTRAL    +/- SPEED    ESC QUIT"),
                       (28, y + 75))
             draw_text(screen, small,
-                      "GAIN {:2.0f}%   ROLL {:+.2f}   PITCH {:+.2f}   ALT {:+.2f}   YAW {:+.2f}".format(
-                          speed * 100, roll, pitch, throttle, yaw),
+                      ("ANDROID SPEED MODE {}  {}  THR {:+.2f}  ROLL {:+.2f}  PITCH {:+.2f}  YAW {:+.2f}".format(
+                          speed_mode, "ALT-HOLD" if altitude_hold else "MANUAL",
+                          throttle, roll, pitch, yaw) if is_android else
+                       "GAIN {:2.0f}%   ROLL {:+.2f}   PITCH {:+.2f}   ALT {:+.2f}   YAW {:+.2f}".format(
+                          speed * 100, roll, pitch, throttle, yaw)),
                       (28, y + 108), BLUE)
             if flight.last_error:
                 network = "CONTROL ERROR: " + flight.last_error
@@ -366,6 +466,8 @@ def main():
                 network_color = AMBER
             draw_text(screen, tiny, network[:130], (28, y + 140), network_color)
             hint = "FOCUS LOST - NEUTRAL INPUTS" if not focused else notice
+            if is_android and not altitude_hold:
+                hint = "MANUAL THROTTLE: UP/DOWN LATCH, SPACE ZERO. T switches to altitude hold."
             draw_text(screen, tiny, hint[:135], (28, y + 167),
                       AMBER if not focused else MUTED)
             draw_text(screen, tiny, "LAST UDP: " + flight.last_sent_hex.upper(),
