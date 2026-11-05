@@ -1,4 +1,5 @@
-# Python 3.12 desktop dependencies; keep broad bounds for supported wheel updates.
+# Original Android JJRC flight deck, Python 3.12 / Windows or Linux
 pygame>=2.6.1,<3
 av>=12,<18
 numpy>=1.26,<3
+opencv-python-headless>=4.10,<5
