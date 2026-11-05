@@ -40,6 +40,17 @@ class SensorDecodeTests(unittest.TestCase):
                 self.assertNotIn("barometer", result)
                 self.assertNotIn("gyro", result)
 
+    def test_real_world_null_padded_vga_and_firmware_responses(self):
+        report = ProbeReport("172.16.10.1", 30, 8081)
+        report.record(bytes.fromhex("5647410000"), ("172.16.10.1", 8080), "query_replies")
+        report.record(bytes.fromhex("56322e332e38"), ("172.16.10.1", 8080), "query_replies")
+        result = report.as_dict()
+        self.assertEqual(result["device_identifiers"], ["VGA"])
+        self.assertEqual(result["firmware_versions"], ["V2.3.8"])
+        self.assertEqual(result["total_packets"], 2)
+        self.assertEqual(result["sensor_availability"]["imu_6_axis"]["status"], "not_verified")
+        self.assertEqual(result["sensor_availability"]["barometer"]["status"], "not_verified")
+
     def test_reports_do_not_infer_sensor_hardware(self):
         report = ProbeReport("127.0.0.1", 10, 8081)
         report.record(b"VGA", ("127.0.0.1", 8080), "query_replies")
