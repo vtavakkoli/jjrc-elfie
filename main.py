@@ -491,16 +491,20 @@ def main():
             viewport = pygame.Rect(24, 91, max(240, w - 48), max(170, h - 329))
             render_view(screen, frame, frame_time, now, viewport, medium, body, vision.state)
             bar_y = viewport.y + 13
+            tracking_label = ("TRACKING {} POINTS".format(vision.inliers)
+                              if vision.state == "TRACKING" else
+                              "RECOVERING - NEUTRAL AXES" if vision.state == "RECOVERING"
+                              else vision.state[:36])
             pill(screen, small, (viewport.x + 12, bar_y),
-                 "TRACKING {} POINTS".format(vision.inliers) if vision.state == "TRACKING"
-                 else vision.state[:36],
+                 tracking_label,
                  active=vision.state == "TRACKING",
                  danger=vision.state.startswith(("VISUAL HOLD OFF", "VIDEO STALE", "NO CAMERA")))
             if vision.enabled:
                 draw_text(screen, mono,
                           "VISION  X {:+.3f}  SCALE {:.3f}  R {:+.2f}  P {:+.2f}".format(
                               vision.shift_x, vision.scale, vision.roll, vision.pitch),
-                          (viewport.x + 17, viewport.bottom - 31), GREEN)
+                          (viewport.x + 17, viewport.bottom - 31),
+                          GREEN if vision.state == "TRACKING" else AMBER)
 
             lower_y = viewport.bottom + 13
             info_h = max(185, h - lower_y - 18)
